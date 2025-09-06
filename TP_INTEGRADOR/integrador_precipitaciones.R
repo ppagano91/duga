@@ -8,6 +8,9 @@ suppressPackageStartupMessages({
   library(sp)
   library(sf)
   library(raster)
+  library(akima)
+  library(car)
+  library(moments)
 })
 
 ## Rutas y configuraciones
@@ -44,6 +47,73 @@ try({
   boxplot(prec$precipitacion, main = "Boxplot de Precipitación", horizontal = TRUE, col = "lightgreen")
   dev.off()
 }, silent = TRUE)
+
+## Normalidad y posibles transformaciones (Consigna B)
+## Shapiro-Wilk, QQ-plot, curva normal teórica, Box-Cox y chequeo posterior
+try({
+  png(filename = file.path(output_dir, "01a_normalidad_hist_qq_precipitacion.png"), width = 1600, height = 900, res = 150)
+  par(mfrow = c(1, 2))
+  hist(prec$precipitacion, prob = TRUE, main = "Histograma con curva normal", ylab = "Frecuencia", xlab = "precipitacion")
+  xx <- seq(min(prec$precipitacion), max(prec$precipitacion), length.out = 60)
+  ff <- dnorm(xx, mean = mean(prec$precipitacion), sd = sd(prec$precipitacion))
+  lines(xx, ff, col = "red", lwd = 2)
+  qqnorm(prec$precipitacion, main = "QQ-plot precipitación")
+  qqline(prec$precipitacion)
+  dev.off()
+}, silent = TRUE)
+
+sw <- tryCatch(shapiro.test(prec$precipitacion), error = function(e) NULL)
+if (!is.null(sw)) print(sw)
+
+## Box-Cox
+bc <- tryCatch(powerTransform(prec$precipitacion), error = function(e) NULL)
+if (!is.null(bc)) {
+  print(bc$roundlam)
+  prec$precipitacion_t <- bcPower(prec$precipitacion, lambda = bc$roundlam)
+  try({
+    png(filename = file.path(output_dir, "01b_boxcox_hist_qq_precipitacion_t.png"), width = 1600, height = 900, res = 150)
+    par(mfrow = c(1, 2))
+    hist(prec$precipitacion_t, prob = TRUE, main = "Histograma (transformada)", ylab = "Frecuencia", xlab = "precipitacion_t")
+    xx <- seq(min(prec$precipitacion_t), max(prec$precipitacion_t), length.out = 60)
+    ff <- dnorm(xx, mean = mean(prec$precipitacion_t), sd = sd(prec$precipitacion_t))
+    lines(xx, ff, col = "red", lwd = 2)
+    qqnorm(prec$precipitacion_t, main = "QQ-plot (transformada)")
+    qqline(prec$precipitacion_t)
+    dev.off()
+  }, silent = TRUE)
+  sw_t <- tryCatch(shapiro.test(prec$precipitacion_t), error = function(e) NULL)
+  if (!is.null(sw_t)) print(sw_t)
+  cat("Asimetría original / transformada:", skewness(prec$precipitacion), skewness(prec$precipitacion_t), "\n")
+}
+
+## Tendencia espacial (Consigna B): Interpolación exploratoria y tendencia lineal
+## Interpolación (akima)
+try({
+  int_prec <- interp(x = prec$longitud, y = prec$latitud, z = prec$precipitacion)
+  png(filename = file.path(output_dir, "02a_interpolacion_filled_contour_precipitacion.png"), width = 1400, height = 1200, res = 150)
+  filled.contour(int_prec,
+                 plot.axes = { axis(1); axis(2); contour(int_prec, add = TRUE, lwd = 1) },
+                 asp = 1, main = "Interpolación exploratoria (filled.contour)")
+  dev.off()
+}, silent = TRUE)
+
+## Tendencia lineal (plano) precip ~ longitud + latitud
+lm_prec <- tryCatch(lm(precipitacion ~ longitud + latitud, data = prec), error = function(e) NULL)
+if (!is.null(lm_prec)) {
+  print(summary(lm_prec))
+  ## Superficie de tendencia en la grilla
+  trend_pred <- predict(lm_prec, newdata = data.frame(longitud = pred_grilla$x, latitud = pred_grilla$y))
+  x_grid_unique_tr <- unique(pred_grilla$x)
+  y_grid_unique_tr <- unique(pred_grilla$y)
+  z_trend <- matrix(trend_pred, nrow = length(x_grid_unique_tr), ncol = length(y_grid_unique_tr))
+  try({
+    png(filename = file.path(output_dir, "02b_tendencia_lineal_precipitacion.png"), width = 1400, height = 1200, res = 150)
+    filled.contour(x_grid_unique_tr, y_grid_unique_tr, z_trend,
+                   plot.axes = { axis(1); axis(2); contour(x_grid_unique_tr, y_grid_unique_tr, z_trend, add = TRUE, lwd = 1) },
+                   asp = 1, main = "Tendencia lineal: precip ~ longitud + latitud")
+    dev.off()
+  }, silent = TRUE)
+}
 
 ## Conversión a geoR::geodata
 prec_geo <- as.geodata(prec, coords.col = c("longitud", "latitud"), data.col = "precipitacion")
